@@ -1,0 +1,1 @@
+pyinstaller --onedir --windowed gui.py --add-data "config.json;." --add-data "azure.tcl;." --add-data "workorder_cache.json;." --add-data "printed_serials.json;." --add-data "impressoes.csv;." --add-data "api1_cache.json;." --add-data "theme;theme" --add-data "app.log;." --hidden-import=modbusclient --hidden-import=label_convert
