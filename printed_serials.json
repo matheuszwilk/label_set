@@ -1,9 +1,128 @@
 [
     {
-        "serial": "5BPR0163-00001",
+        "serial": "5CPR0398-00499",
         "printed": true,
-        "print_timestamp": "2025-02-26T14:56:51.616763",
-        "ModelSuffix": "S32Q16UAGA0.EB2GAM1",
-        "SerialNo": "21S32502ERBF8769254220"
+        "print_timestamp": "2025-03-05T17:40:42.534100",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502ALD84969254100"
+    },
+    {
+        "serial": "5CPR0398-00500",
+        "printed": true,
+        "print_timestamp": "2025-03-05T17:45:58.273802",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502WSD84979254100"
+    },
+    {
+        "serial": "5CPR0398-00486",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:02:57.456514",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502CQD84839254100"
+    },
+    {
+        "serial": "5CPR0398-00483",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:04:39.555036",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502PUD84809254100"
+    },
+    {
+        "serial": "5CPR0398-00492",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:06:05.658915",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502THD84899254100"
+    },
+    {
+        "serial": "5CPR0398-00493",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:07:10.261238",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502DBD84909254100"
+    },
+    {
+        "serial": "5CPR0398-00482",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:08:04.706089",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502VND84799254100"
+    },
+    {
+        "serial": "5CPR0398-00480",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:12:47.354806",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502BZD84779254100"
+    },
+    {
+        "serial": "5CPR0398-00478",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:13:51.564166",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502FMD84759254100"
+    },
+    {
+        "serial": "5CPR0398-00484",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:40:13.101158",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502HYD84819254100"
+    },
+    {
+        "serial": "5CPR0398-00481",
+        "printed": true,
+        "print_timestamp": "2025-03-06T09:42:49.217788",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502RDD84789254100"
+    },
+    {
+        "serial": "5CPR0398-00489",
+        "printed": true,
+        "print_timestamp": "2025-03-06T10:00:48.101166",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502SPD84869254100"
+    },
+    {
+        "serial": "5CPR0398-00488",
+        "printed": true,
+        "print_timestamp": "2025-03-06T10:02:36.403353",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502ZXD84859254100"
+    },
+    {
+        "serial": "5CPR0398-00498",
+        "printed": true,
+        "print_timestamp": "2025-03-06T10:29:27.989721",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502NKD84959254100"
+    },
+    {
+        "serial": "5CPR0398-00471",
+        "printed": true,
+        "print_timestamp": "2025-03-06T10:33:25.034200",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502ERD84689254100"
+    },
+    {
+        "serial": "5CPR0398-00469",
+        "printed": true,
+        "print_timestamp": "2025-03-06T10:42:12.394573",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502DBD84669254100"
+    },
+    {
+        "serial": "5CPR0398-00474",
+        "printed": true,
+        "print_timestamp": "2025-03-06T10:55:01.378897",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502NKD84719254100"
+    },
+    {
+        "serial": "5CPR0398-00494",
+        "printed": true,
+        "print_timestamp": "2025-03-06T11:15:04.004907",
+        "ModelSuffix": "S3UQ18KL31B.EB2GAM1",
+        "SerialNo": "21S3U502MGD84919254100"
     }
 ]

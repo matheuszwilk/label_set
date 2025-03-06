@@ -11,6 +11,15 @@ import re
 
 # Importa a classe LabelManager e a função resource_path definidas em main_top
 from main import LabelManager, resource_path
+import modbusclient
+from importlib import reload
+# Limpa o cache de configuração antes de recarregar o módulo
+modbusclient._modbus_config = None
+modbusclient._last_config_time = 0
+reload(modbusclient)
+
+# Forçar a recarga das configurações
+modbusclient.load_modbus_config()
 
 # ---------------------------------------------------------------------------
 # Custom Logging Classes
@@ -110,6 +119,7 @@ class LabelManagerGUI(tk.Tk):
         # Propriedades para os tooltips dos indicadores
         self.printer_tooltip = None
         self.scanner_tooltip = None
+        self.scanner2_tooltip = None  # NOVO: Tooltip para o scanner2
 
         # Define o diretório atual e seta o cwd
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -144,24 +154,31 @@ class LabelManagerGUI(tk.Tk):
                              relief="raised",
                              borderwidth=1)
         
-        # Configuração das portas
         if label_manager:
             self.label_manager = label_manager
         else:
             serial_port = self.config_data.get("serial_port", "COM12")
             scanner_port = self.config_data.get("scanner_port", "COM6")
-            self.label_manager = LabelManager(serial_port=serial_port, scanner_port=scanner_port)
+            scanner_port2 = self.config_data.get("scanner_port2", "COM7")
+            scanner_baud_rate = self.config_data.get("scanner_baud_rate", 9600)
+            scanner_baud_rate2 = self.config_data.get("scanner_baud_rate2", 9600)
+            self.label_manager = LabelManager(
+                serial_port=serial_port, 
+                scanner_port=scanner_port,
+                scanner_port2=scanner_port2,
+                scanner_baud_rate=scanner_baud_rate,
+                scanner_baud_rate2=scanner_baud_rate2
+            )
 
-        # ---------------------------------------------------------------------------
-        # NOVO: Atributo para indicar se a conexão com o scanner foi estabelecida com sucesso.
-        # ---------------------------------------------------------------------------
+        # Atributos para indicar se as conexões com os scanners foram estabelecidas com sucesso.
         self.scanner_connected = False
+        self.scanner2_connected = False  # NOVO: Status de conexão do scanner2
 
-        # ---------------------------------------------------------------------------
-        # Atributos para controlar a thread do scanner
-        # ---------------------------------------------------------------------------
+        # Atributos para controlar as threads dos scanners
         self.scanner_stop_event = threading.Event()
         self.scanner_listener_thread = None
+        self.scanner2_stop_event = threading.Event()  # NOVO: Evento para parar o scanner2
+        self.scanner2_listener_thread = None  # NOVO: Thread para o scanner2
 
         # Cria o Notebook com abas
         self.notebook = ttk.Notebook(self)
@@ -174,7 +191,22 @@ class LabelManagerGUI(tk.Tk):
 
         # Inicia o listener contínuo do scanner
         self.start_scanner_listener()
+        self.start_scanner2_listener()  # NOVO: Inicia o listener do scanner2
         self.auto_refresh_tables()
+        self.start_modbus_monitor_thread()
+        self.start_modbus_monitoring()
+
+    def start_modbus_monitor_thread(self):
+        """
+        Inicia a thread que executa a função monitor_modbus_input.
+        """
+        try:
+            from modbusclient import monitor_modbus_input
+            self.modbus_monitor_thread = threading.Thread(target=monitor_modbus_input, daemon=True)
+            self.modbus_monitor_thread.start()
+            logging.info("Thread de monitoramento Modbus iniciada")
+        except Exception as e:
+            logging.error(f"Erro ao iniciar thread de monitoramento Modbus: {e}")
 
     def configure_theme_styles(self):
         """
@@ -219,9 +251,7 @@ class LabelManagerGUI(tk.Tk):
         self.dashboard_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.dashboard_tab, text="Dashboard")
         
-        # -------------------------------------------------------------------------------------
         # Indicadores de conexão para Impressora e Scanner
-        # -------------------------------------------------------------------------------------
         status_label = ttk.Label(self.dashboard_tab, text="Status das Portas:", font=("Helvetica", 12, "bold"))
         status_label.pack(anchor="w", padx=10, pady=(10, 5))
         indicator_frame = ttk.Frame(self.dashboard_tab)
@@ -237,8 +267,8 @@ class LabelManagerGUI(tk.Tk):
         self.printer_canvas.bind("<Enter>", self.show_printer_tooltip)
         self.printer_canvas.bind("<Leave>", self.hide_printer_tooltip)
         
-        # Indicador para porta do Scanner
-        scanner_label = ttk.Label(indicator_frame, text="Scanner: ")
+        # Indicador para porta do Scanner 1
+        scanner_label = ttk.Label(indicator_frame, text="Scanner 1: ")
         scanner_label.grid(row=0, column=2, sticky="w")
         self.scanner_canvas = tk.Canvas(indicator_frame, width=20, height=20, bd=0, highlightthickness=0)
         self.scanner_canvas.grid(row=0, column=3, padx=(0,20))
@@ -246,6 +276,16 @@ class LabelManagerGUI(tk.Tk):
         self.scanner_circle = self.scanner_canvas.create_oval(2, 2, 18, 18, fill=initial_scanner_color)
         self.scanner_canvas.bind("<Enter>", self.show_scanner_tooltip)
         self.scanner_canvas.bind("<Leave>", self.hide_scanner_tooltip)
+        
+        # NOVO: Indicador para porta do Scanner 2
+        scanner2_label = ttk.Label(indicator_frame, text="Scanner 2: ")
+        scanner2_label.grid(row=0, column=4, sticky="w")
+        self.scanner2_canvas = tk.Canvas(indicator_frame, width=20, height=20, bd=0, highlightthickness=0)
+        self.scanner2_canvas.grid(row=0, column=5, padx=(0,20))
+        initial_scanner2_color = "green" if self.is_scanner2_connected() else "red"
+        self.scanner2_circle = self.scanner2_canvas.create_oval(2, 2, 18, 18, fill=initial_scanner2_color)
+        self.scanner2_canvas.bind("<Enter>", self.show_scanner2_tooltip)
+        self.scanner2_canvas.bind("<Leave>", self.hide_scanner2_tooltip)
         
         # Atualiza periodicamente os indicadores de conexão
         self.update_connection_indicators()
@@ -424,12 +464,26 @@ class LabelManagerGUI(tk.Tk):
     
     def on_history_scroll(self, *args):
         """
-        Handler for scrollbar movement in history table.
-        Loads more records when reaching bottom.
+        Manipula eventos de rolagem na tabela de histórico.
+        Verifica se os argumentos são válidos para o método yview.
         """
-        if args[1] == '1.0':  # Reached bottom
-            self.load_more_records()
-        return self.history_tree.yview(*args)
+        if args and len(args) > 0:
+            if args[0] in ('moveto', 'scroll'):
+                return self.history_tree.yview(*args)
+            else:
+                # Se for um evento de rolagem do mouse
+                delta = args[0].delta if hasattr(args[0], 'delta') else 0
+                
+                # Para diferentes sistemas operacionais
+                if hasattr(args[0], 'num') and args[0].num in (4, 5):
+                    # Linux
+                    delta = 120 if args[0].num == 4 else -120
+                
+                # Rolar baseado no delta (direção da rolagem)
+                if delta:
+                    self.history_tree.yview_scroll(int(-1 * delta / 120), "units")
+                return "break"  # Impede a propagação do evento
+        return
 
     def load_more_records(self):
         """
@@ -464,122 +518,179 @@ class LabelManagerGUI(tk.Tk):
         header_label = ttk.Label(main_frame, text="Configurações", style="Header.TLabel")
         header_label.pack(anchor="w", pady=(0, 10))
 
-        card = ttk.Frame(main_frame, style="Card.TFrame", padding=10)
-        card.pack(fill="both", expand=True, padx=10, pady=10)
+        # Frame principal que conterá as 3 colunas
+        columns_frame = ttk.Frame(main_frame)
+        columns_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Configurar as 3 colunas com pesos iguais
+        columns_frame.columnconfigure(0, weight=1)
+        columns_frame.columnconfigure(1, weight=1)
+        columns_frame.columnconfigure(2, weight=1)
 
-        # Ajuste as colunas para manter alinhamento
-        card.grid_columnconfigure(1, weight=1)
+        # ===== COLUNA 1: Configurações de Conexão =====
+        col1_frame = ttk.LabelFrame(columns_frame, text="Conexões", padding=10)
+        col1_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        
+        # Configuração da coluna interna
+        col1_frame.columnconfigure(1, weight=1)
 
-        # -----------------------------------------------------------
-        # Campos já existentes (Porta Printer, Scanner, Tema, etc.)
-        # -----------------------------------------------------------
-        port_label = ttk.Label(card, text="Porta Printer:")
+        # Porta Printer
+        port_label = ttk.Label(col1_frame, text="Porta Printer:")
         port_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        self.port_entry = ttk.Entry(card)
+        self.port_entry = ttk.Entry(col1_frame)
         self.port_entry.insert(0, self.config_data.get("serial_port", "COM12"))
         self.port_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 
-        scanner_label = ttk.Label(card, text="Porta Scanner:")
-        scanner_label.grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        self.scanner_entry = ttk.Entry(card)
-        self.scanner_entry.insert(0, self.config_data.get("scanner_port", "COM6"))
-        self.scanner_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
-
-        tema_label = ttk.Label(card, text="Tema:")
-        tema_label.grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        self.theme_var = tk.StringVar(value=self.config_data.get("theme", "light"))
-        tema_combo = ttk.Combobox(card, textvariable=self.theme_var, values=["light", "dark"], state="readonly")
-        tema_combo.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
-
-        novo_darkness_label = ttk.Label(card, text="Novo Darkness:")
-        novo_darkness_label.grid(row=3, column=0, sticky="w", padx=5, pady=5)
-        self.novo_darkness_entry = ttk.Entry(card)
-        self.novo_darkness_entry.insert(0, self.config_data.get("novo_darkness", 7))
-        self.novo_darkness_entry.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
-
-        # -----------------------------------------------------------
-        # Desired Move X
-        # -----------------------------------------------------------
-        move_x_label = ttk.Label(card, text="Desired Move X:")
-        move_x_label.grid(row=4, column=0, sticky="w", padx=5, pady=5)
-        self.move_x_entry = ttk.Entry(card)
-        self.move_x_entry.insert(0, self.config_data.get("desired_move_x", 50))
-        self.move_x_entry.grid(row=4, column=1, sticky="ew", padx=5, pady=5)
-
-        # -----------------------------------------------------------
-        # NOVO: Desired Move Y
-        # -----------------------------------------------------------
-        move_y_label = ttk.Label(card, text="Desired Move Y:")  # NOVO
-        move_y_label.grid(row=5, column=0, sticky="w", padx=5, pady=5)  # NOVO
-        self.move_y_entry = ttk.Entry(card)  # NOVO
-        self.move_y_entry.insert(0, self.config_data.get("desired_move_y", 0))  # NOVO (padrão 0)
-        self.move_y_entry.grid(row=5, column=1, sticky="ew", padx=5, pady=5)  # NOVO
-
-        # -----------------------------------------------------------
-        # Agora, como adicionamos o move_y, 
-        # precisamos aumentar o índice das linhas seguintes
-        # -----------------------------------------------------------
-
-        # 1) label_type_for_workorder
-        label_type_label = ttk.Label(card, text="Label Type (WorkOrder):")
-        label_type_label.grid(row=6, column=0, sticky="w", padx=5, pady=5)
-        self.label_type_entry = ttk.Entry(card)
-        self.label_type_entry.insert(0, self.config_data.get("label_type_for_workorder", "SET"))
-        self.label_type_entry.grid(row=6, column=1, sticky="ew", padx=5, pady=5)
-
-        # 2) Baud Rate (impressora)
-        baud_rate_label = ttk.Label(card, text="Baud Rate (Printer):")
-        baud_rate_label.grid(row=7, column=0, sticky="w", padx=5, pady=5)
-        self.baud_rate_entry = ttk.Entry(card)
+        # Baud Rate (impressora)
+        baud_rate_label = ttk.Label(col1_frame, text="Baud Rate (Printer):")
+        baud_rate_label.grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        self.baud_rate_entry = ttk.Entry(col1_frame)
         self.baud_rate_entry.insert(0, self.config_data.get("baud_rate", 9600))
-        self.baud_rate_entry.grid(row=7, column=1, sticky="ew", padx=5, pady=5)
+        self.baud_rate_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 
-        # 3) Baud rate (scanner)
-        scanner_baud_rate_label = ttk.Label(card, text="Baud Rate (Scanner):")
-        scanner_baud_rate_label.grid(row=8, column=0, sticky="w", padx=5, pady=5)
-        self.scanner_baud_rate_entry = ttk.Entry(card)
+        # Porta Scanner 1
+        scanner_label = ttk.Label(col1_frame, text="Porta Scanner 1:")
+        scanner_label.grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        self.scanner_entry = ttk.Entry(col1_frame)
+        self.scanner_entry.insert(0, self.config_data.get("scanner_port", "COM6"))
+        self.scanner_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
+        
+        # Baud rate (scanner 1)
+        scanner_baud_rate_label = ttk.Label(col1_frame, text="Baud Rate (Scanner 1):")
+        scanner_baud_rate_label.grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        self.scanner_baud_rate_entry = ttk.Entry(col1_frame)
         self.scanner_baud_rate_entry.insert(0, self.config_data.get("scanner_baud_rate", 9600))
-        self.scanner_baud_rate_entry.grid(row=8, column=1, sticky="ew", padx=5, pady=5)
+        self.scanner_baud_rate_entry.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
 
-        # 4) zpl_scale
-        zpl_scale_label = ttk.Label(card, text="ZPL Scale:")
-        zpl_scale_label.grid(row=9, column=0, sticky="w", padx=5, pady=5)
-        self.zpl_scale_entry = ttk.Entry(card)
+        # Porta Scanner 2
+        scanner2_label = ttk.Label(col1_frame, text="Porta Scanner 2:")
+        scanner2_label.grid(row=4, column=0, sticky="w", padx=5, pady=5)
+        self.scanner2_entry = ttk.Entry(col1_frame)
+        self.scanner2_entry.insert(0, self.config_data.get("scanner_port2", "COM7"))
+        self.scanner2_entry.grid(row=4, column=1, sticky="ew", padx=5, pady=5)
+
+        # Baud rate (scanner 2)
+        scanner2_baud_rate_label = ttk.Label(col1_frame, text="Baud Rate (Scanner 2):")
+        scanner2_baud_rate_label.grid(row=5, column=0, sticky="w", padx=5, pady=5)
+        self.scanner2_baud_rate_entry = ttk.Entry(col1_frame)
+        self.scanner2_baud_rate_entry.insert(0, self.config_data.get("scanner_baud_rate2", 9600))
+        self.scanner2_baud_rate_entry.grid(row=5, column=1, sticky="ew", padx=5, pady=5)
+
+        # Tema
+        tema_label = ttk.Label(col1_frame, text="Tema:")
+        tema_label.grid(row=6, column=0, sticky="w", padx=5, pady=5)
+        self.theme_var = tk.StringVar(value=self.config_data.get("theme", "light"))
+        tema_combo = ttk.Combobox(col1_frame, textvariable=self.theme_var, values=["light", "dark"], state="readonly")
+        tema_combo.grid(row=6, column=1, sticky="ew", padx=5, pady=5)
+
+        # ===== COLUNA 2: Configurações de Impressão =====
+        col2_frame = ttk.LabelFrame(columns_frame, text="Impressão", padding=10)
+        col2_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+        
+        # Configuração da coluna interna
+        col2_frame.columnconfigure(1, weight=1)
+
+        # Novo Darkness
+        novo_darkness_label = ttk.Label(col2_frame, text="Novo Darkness:")
+        novo_darkness_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.novo_darkness_entry = ttk.Entry(col2_frame)
+        self.novo_darkness_entry.insert(0, self.config_data.get("novo_darkness", 7))
+        self.novo_darkness_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        # Desired Move X
+        move_x_label = ttk.Label(col2_frame, text="Desired Move X:")
+        move_x_label.grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        self.move_x_entry = ttk.Entry(col2_frame)
+        self.move_x_entry.insert(0, self.config_data.get("desired_move_x", 50))
+        self.move_x_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+
+        # Desired Move Y
+        move_y_label = ttk.Label(col2_frame, text="Desired Move Y:")
+        move_y_label.grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        self.move_y_entry = ttk.Entry(col2_frame)
+        self.move_y_entry.insert(0, self.config_data.get("desired_move_y", 0))
+        self.move_y_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
+
+        # zpl_scale
+        zpl_scale_label = ttk.Label(col2_frame, text="ZPL Scale:")
+        zpl_scale_label.grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        self.zpl_scale_entry = ttk.Entry(col2_frame)
         self.zpl_scale_entry.insert(0, self.config_data.get("zpl_scale", 2))
-        self.zpl_scale_entry.grid(row=9, column=1, sticky="ew", padx=5, pady=5)
+        self.zpl_scale_entry.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
 
-        # 5) Modbus
-        modbus_host_label = ttk.Label(card, text="Modbus Host:")
-        modbus_host_label.grid(row=10, column=0, sticky="w", padx=5, pady=5)
-        self.modbus_host_entry = ttk.Entry(card)
+        # label_type_for_workorder
+        label_type_label = ttk.Label(col2_frame, text="Label Type (WorkOrder):")
+        label_type_label.grid(row=4, column=0, sticky="w", padx=5, pady=5)
+        self.label_type_entry = ttk.Entry(col2_frame)
+        self.label_type_entry.insert(0, self.config_data.get("label_type_for_workorder", "SET"))
+        self.label_type_entry.grid(row=4, column=1, sticky="ew", padx=5, pady=5)
+
+        # ===== COLUNA 3: Configurações do Modbus =====
+        col3_frame = ttk.LabelFrame(columns_frame, text="Modbus", padding=10)
+        col3_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
+        
+        # Configuração da coluna interna
+        col3_frame.columnconfigure(1, weight=1)
+
+        # Modbus Host
+        modbus_host_label = ttk.Label(col3_frame, text="Host:")
+        modbus_host_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.modbus_host_entry = ttk.Entry(col3_frame)
         self.modbus_host_entry.insert(0, self.config_data.get("modbus_host", "127.0.0.1"))
-        self.modbus_host_entry.grid(row=10, column=1, sticky="ew", padx=5, pady=5)
+        self.modbus_host_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 
-        modbus_port_label = ttk.Label(card, text="Modbus Port:")
-        modbus_port_label.grid(row=11, column=0, sticky="w", padx=5, pady=5)
-        self.modbus_port_entry = ttk.Entry(card)
+        # Modbus Port
+        modbus_port_label = ttk.Label(col3_frame, text="Port:")
+        modbus_port_label.grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        self.modbus_port_entry = ttk.Entry(col3_frame)
         self.modbus_port_entry.insert(0, self.config_data.get("modbus_port", 502))
-        self.modbus_port_entry.grid(row=11, column=1, sticky="ew", padx=5, pady=5)
+        self.modbus_port_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 
-        modbus_address_label = ttk.Label(card, text="Modbus Address:")
-        modbus_address_label.grid(row=12, column=0, sticky="w", padx=5, pady=5)
-        self.modbus_address_entry = ttk.Entry(card)
+        # Modbus Address
+        modbus_address_label = ttk.Label(col3_frame, text="Address Status Impressora:")
+        modbus_address_label.grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        self.modbus_address_entry = ttk.Entry(col3_frame)
         self.modbus_address_entry.insert(0, self.config_data.get("modbus_address", 0))
-        self.modbus_address_entry.grid(row=12, column=1, sticky="ew", padx=5, pady=5)
+        self.modbus_address_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
 
-        # Botões (Salvar Configurações, etc.)
-        button_frame = ttk.Frame(card)
-        button_frame.grid(row=13, column=0, columnspan=2, pady=10)
+        # Modbus Monitor Address (NOVO)
+        modbus_monitor_label = ttk.Label(col3_frame, text="Address Sensor:")
+        modbus_monitor_label.grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        self.modbus_monitor_entry = ttk.Entry(col3_frame)
+        self.modbus_monitor_entry.insert(0, self.config_data.get("modbus_address_to_monitor", 5))
+        self.modbus_monitor_entry.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
 
-        save_button = ttk.Button(button_frame, text="Salvar Configurações", command=self.save_configuration)
+        # Modbus Write Address (NOVO)
+        modbus_write_label = ttk.Label(col3_frame, text="Address Stop/Start:")
+        modbus_write_label.grid(row=4, column=0, sticky="w", padx=5, pady=5)
+        self.modbus_write_entry = ttk.Entry(col3_frame)
+        self.modbus_write_entry.insert(0, self.config_data.get("modbus_address_to_write", 6))
+        self.modbus_write_entry.grid(row=4, column=1, sticky="ew", padx=5, pady=5)
+
+        # Modbus Confirmation Address (NOVO)
+        modbus_confirm_label = ttk.Label(col3_frame, text="Address Confirmação Scanner:")
+        modbus_confirm_label.grid(row=5, column=0, sticky="w", padx=5, pady=5)
+        self.modbus_confirm_entry = ttk.Entry(col3_frame)
+        self.modbus_confirm_entry.insert(0, self.config_data.get("modbus_address_read_confirmation", 7))
+        self.modbus_confirm_entry.grid(row=5, column=1, sticky="ew", padx=5, pady=5)
+
+        # Botões (centralizados)
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", padx=10, pady=10)
+        
+        # Container para centralizar os botões
+        center_container = ttk.Frame(button_frame)
+        center_container.pack(anchor="center")
+
+        save_button = ttk.Button(center_container, text="Salvar Configurações", command=self.save_configuration)
         save_button.pack(side="left", padx=5)
 
-        test_print_button = ttk.Button(button_frame, text="Teste de Impressão", command=self.test_print_label)
+        test_print_button = ttk.Button(center_container, text="Teste de Impressão", command=self.test_print_label)
         test_print_button.pack(side="left", padx=5)
 
-        # Label de status
-        self.config_status = ttk.Label(card, text="", foreground="green")
-        self.config_status.grid(row=14, column=0, columnspan=2, pady=5)
+        # Label de status (centralizada)
+        self.config_status = ttk.Label(main_frame, text="", foreground="green", anchor="center", justify="center")
+        self.config_status.pack(fill="x", padx=10, pady=5)
     
     def test_print_label(self):
         """
@@ -610,8 +721,9 @@ class LabelManagerGUI(tk.Tk):
         """
         new_port = self.port_entry.get().strip()
         new_scanner_port = self.scanner_entry.get().strip()
+        new_scanner_port2 = self.scanner2_entry.get().strip()
         new_theme = self.theme_var.get().strip()
-
+        
         # Darkness
         new_darkness = self.novo_darkness_entry.get().strip()
         try:
@@ -631,19 +743,16 @@ class LabelManagerGUI(tk.Tk):
             self.config_status.config(text="Digite um valor numérico válido para Desired Move X.")
             return
 
-        # -----------------------------------------------------
-        # NOVO: Desired Move Y
-        # -----------------------------------------------------
-        new_move_y = self.move_y_entry.get().strip()  # NOVO
+        # Desired Move Y
+        new_move_y = self.move_y_entry.get().strip()
         try:
-            new_move_y_value = int(new_move_y)         # NOVO
-            if not (0 <= new_move_y_value <= 100):     # (ou outro range se preferir)
-                self.config_status.config(text="Digite um valor válido para Desired Move Y (0-100).")  # NOVO
+            new_move_y_value = int(new_move_y)
+            if not (0 <= new_move_y_value <= 100):
+                self.config_status.config(text="Digite um valor válido para Desired Move Y (0-100).")
                 return
         except ValueError:
-            self.config_status.config(text="Digite um valor numérico válido para Desired Move Y.")  # NOVO
+            self.config_status.config(text="Digite um valor numérico válido para Desired Move Y.")
             return
-        # -----------------------------------------------------
 
         # label_type_for_workorder
         new_label_type_for_workorder = self.label_type_entry.get().strip()
@@ -661,7 +770,15 @@ class LabelManagerGUI(tk.Tk):
         try:
             new_scanner_baud_rate_value = int(new_scanner_baud_rate)
         except ValueError:
-            self.config_status.config(text="Digite um valor numérico válido para o Baud Rate (Scanner).")
+            self.config_status.config(text="Digite um valor numérico válido para o Baud Rate (Scanner 1).")
+            return
+            
+        # Scanner Baud Rate 2
+        new_scanner_baud_rate2 = self.scanner2_baud_rate_entry.get().strip()
+        try:
+            new_scanner_baud_rate2_value = int(new_scanner_baud_rate2)
+        except ValueError:
+            self.config_status.config(text="Digite um valor numérico válido para o Baud Rate (Scanner 2).")
             return
 
         # ZPL Scale
@@ -681,36 +798,45 @@ class LabelManagerGUI(tk.Tk):
             self.config_status.config(text="Digite um valor numérico válido para o Modbus port.")
             return
 
+        # Modbus Addresses
         new_modbus_address = self.modbus_address_entry.get().strip()
+        new_modbus_monitor = self.modbus_monitor_entry.get().strip()  # NOVO
+        new_modbus_write = self.modbus_write_entry.get().strip()  # NOVO
+        new_modbus_confirm = self.modbus_confirm_entry.get().strip()  # NOVO
+        
         try:
             new_modbus_address_value = int(new_modbus_address)
+            new_modbus_monitor_value = int(new_modbus_monitor)  # NOVO
+            new_modbus_write_value = int(new_modbus_write)  # NOVO
+            new_modbus_confirm_value = int(new_modbus_confirm)  # NOVO
         except ValueError:
-            self.config_status.config(text="Digite um valor numérico válido para o Modbus address.")
+            self.config_status.config(text="Digite valores numéricos válidos para todos os endereços Modbus.")
             return
 
-        if not new_port or not new_scanner_port or not new_modbus_host:
+        if not new_port or not new_scanner_port or not new_scanner_port2 or not new_modbus_host:
             self.config_status.config(text="Digite portas e host válidos para as configurações.")
             return
 
-        # ------------------------------------------
         # Atualiza o dicionário config_data
-        # ------------------------------------------
         self.config_data["serial_port"] = new_port
         self.config_data["scanner_port"] = new_scanner_port
+        self.config_data["scanner_port2"] = new_scanner_port2
         self.config_data["theme"] = new_theme
         self.config_data["novo_darkness"] = new_darkness_value
         self.config_data["desired_move_x"] = new_move_x_value
-
-        # NOVO: desired_move_y
-        self.config_data["desired_move_y"] = new_move_y_value  # NOVO
-
+        self.config_data["desired_move_y"] = new_move_y_value
         self.config_data["label_type_for_workorder"] = new_label_type_for_workorder
         self.config_data["baud_rate"] = new_baud_rate_value
         self.config_data["scanner_baud_rate"] = new_scanner_baud_rate_value
+        self.config_data["scanner_baud_rate2"] = new_scanner_baud_rate2_value
         self.config_data["zpl_scale"] = new_zpl_scale_value
         self.config_data["modbus_host"] = new_modbus_host
         self.config_data["modbus_port"] = new_modbus_port_value
         self.config_data["modbus_address"] = new_modbus_address_value
+        # Novos campos Modbus
+        self.config_data["modbus_address_to_monitor"] = new_modbus_monitor_value
+        self.config_data["modbus_address_to_write"] = new_modbus_write_value
+        self.config_data["modbus_address_read_confirmation"] = new_modbus_confirm_value
 
         # Salva no config.json
         save_config(self.config_data)
@@ -718,17 +844,26 @@ class LabelManagerGUI(tk.Tk):
         # Atualiza atributos do LabelManager
         self.label_manager.serial_port = new_port
         self.label_manager.scanner_port = new_scanner_port
+        self.label_manager.scanner_port2 = new_scanner_port2
         self.label_manager.novo_darkness = new_darkness_value
         self.label_manager.desired_move_x = new_move_x_value
-        self.label_manager.desired_move_y = new_move_y_value  # NOVO
-
+        self.label_manager.desired_move_y = new_move_y_value
         self.label_manager.label_type_for_workorder = new_label_type_for_workorder
         self.label_manager.baud_rate = new_baud_rate_value
         self.label_manager.scanner_baud_rate = new_scanner_baud_rate_value
+        self.label_manager.scanner_baud_rate2 = new_scanner_baud_rate2_value
         self.label_manager.zpl_scale = new_zpl_scale_value
+        self.label_manager.modbus_host = new_modbus_host
+        self.label_manager.modbus_port = new_modbus_port_value
+        self.label_manager.modbus_address = new_modbus_address_value
+        # Novos campos Modbus
+        self.label_manager.modbus_address_to_monitor = new_modbus_monitor_value
+        self.label_manager.modbus_address_to_write = new_modbus_write_value
+        self.label_manager.modbus_address_read_confirmation = new_modbus_confirm_value
 
-        # Reinicia o listener do scanner, se necessário
+        # Reinicia os listeners dos scanners, se necessário
         self.restart_scanner_listener()
+        self.restart_scanner2_listener()
         self.update_connection_indicators()
 
         # Se o tema mudou, aplica o novo
@@ -739,18 +874,33 @@ class LabelManagerGUI(tk.Tk):
         # Exemplo de recarregar o modbusclient (caso seu código já possua isso)
         import modbusclient
         from importlib import reload
+        # Limpa o cache de configuração antes de recarregar
+        if hasattr(modbusclient, "_modbus_config"):
+            modbusclient._modbus_config = None
         reload(modbusclient)
 
-        # Exibe mensagem de sucesso no label de status, incluindo MoveY
-        self.config_status.config(
-            text=(
-                f"Configurações atualizadas com sucesso!\n"
-                f"Printer: {new_port}, Scanner: {new_scanner_port}, Tema: {new_theme}, Darkness: {new_darkness_value},\n"
-                f"MoveX: {new_move_x_value}, MoveY: {new_move_y_value}, Label Type: {new_label_type_for_workorder}, BaudRate Printer: {new_baud_rate_value},\n"
-                f"BaudRate Scanner: {new_scanner_baud_rate_value}, ZPL Scale: {new_zpl_scale_value},\n"
-                f"Modbus: {new_modbus_host}:{new_modbus_port_value}, Address: {new_modbus_address_value}."
-            )
-        )
+        self.restart_modbus_monitor()
+
+        # Exibe mensagem de sucesso
+        self.config_status.config(text="Configurações atualizadas com sucesso!")
+
+    def restart_modbus_monitor(self):
+        """
+        Reinicia a thread de monitoramento Modbus com as configurações atualizadas.
+        """
+        # Se já existe uma thread de monitoramento, para ela (não é possível realmente)
+        # Uma nova thread será criada
+        try:
+            from modbusclient import monitor_modbus_input
+            if hasattr(self, 'modbus_monitor_thread') and self.modbus_monitor_thread.is_alive():
+                logging.info("Thread de monitoramento Modbus já está em execução")
+            else:
+                # Inicia uma nova thread de monitoramento
+                self.modbus_monitor_thread = threading.Thread(target=monitor_modbus_input, daemon=True)
+                self.modbus_monitor_thread.start()
+                logging.info("Thread de monitoramento Modbus iniciada")
+        except Exception as e:
+            logging.error(f"Erro ao iniciar thread de monitoramento Modbus: {e}")
 
     def on_process_serial(self):
         """
@@ -892,17 +1042,29 @@ class LabelManagerGUI(tk.Tk):
         return (self.scanner_listener_thread is not None and 
                 self.scanner_listener_thread.is_alive() and 
                 self.scanner_connected)
+    
+    def is_scanner2_connected(self):
+        """
+        Verifica se o scanner 2 está operacional.
+        Retorna True somente se a thread estiver ativa e a conexão com a porta foi estabelecida com sucesso.
+        """
+        return (self.scanner2_listener_thread is not None and 
+                self.scanner2_listener_thread.is_alive() and 
+                self.scanner2_connected)
 
     def update_connection_indicators(self):
         """
-        Atualiza os indicadores de conexão das portas da impressora e do scanner.
+        Atualiza os indicadores de conexão das portas da impressora e dos scanners.
         """
         printer_status = self.is_printer_connected()
         scanner_status = self.is_scanner_connected()
+        scanner2_status = self.is_scanner2_connected()  # NOVO: Status do scanner 2
         printer_color = "green" if printer_status else "red"
         scanner_color = "green" if scanner_status else "red"
+        scanner2_color = "green" if scanner2_status else "red"  # NOVO: Cor do scanner 2
         self.printer_canvas.itemconfig(self.printer_circle, fill=printer_color)
         self.scanner_canvas.itemconfig(self.scanner_circle, fill=scanner_color)
+        self.scanner2_canvas.itemconfig(self.scanner2_circle, fill=scanner2_color)  # NOVO: Atualiza cor do scanner 2
         self.after(5000, self.update_connection_indicators)
 
     def show_printer_tooltip(self, event):
@@ -952,6 +1114,26 @@ class LabelManagerGUI(tk.Tk):
             borderwidth=1,
             relief="solid"
         ).pack(ipadx=5, ipady=2)
+    
+    def show_scanner2_tooltip(self, event):
+        """
+        Exibe um tooltip com o status da porta do scanner 2.
+        """
+        status = "Conectado" if self.is_scanner2_connected() else "Desconectado"
+        x = event.x_root + 10
+        y = event.y_root + 10
+        self.scanner2_tooltip = tk.Toplevel(self.scanner2_canvas)
+        self.scanner2_tooltip.wm_overrideredirect(True)
+        self.scanner2_tooltip.wm_geometry(f"+{x}+{y}")
+        bg_color = self.scanner2_canvas.cget("bg")
+        tk.Label(
+            self.scanner2_tooltip,
+            text=f"Scanner 2: {status}",
+            bg=bg_color,
+            font=("Helvetica", 10),
+            borderwidth=1,
+            relief="solid"
+        ).pack(ipadx=5, ipady=2)
 
     def hide_scanner_tooltip(self, event):
         """
@@ -960,6 +1142,14 @@ class LabelManagerGUI(tk.Tk):
         if self.scanner_tooltip:
             self.scanner_tooltip.destroy()
             self.scanner_tooltip = None
+
+    def hide_scanner2_tooltip(self, event):
+        """
+        Remove o tooltip do scanner 2.
+        """
+        if self.scanner2_tooltip:
+            self.scanner2_tooltip.destroy()
+            self.scanner2_tooltip = None
 
     # ---------------------------------------------------------------------------
     # Métodos para controle da thread do scanner
@@ -972,6 +1162,14 @@ class LabelManagerGUI(tk.Tk):
         self.scanner_listener_thread = threading.Thread(target=self.scanner_listener, daemon=True)
         self.scanner_listener_thread.start()
 
+    def start_scanner2_listener(self):
+        """
+        Inicia uma thread que mantém a porta do scanner 2 aberta para leituras.
+        """
+        self.scanner2_stop_event.clear()
+        self.scanner2_listener_thread = threading.Thread(target=self.scanner2_listener, daemon=True)
+        self.scanner2_listener_thread.start()
+
     def stop_scanner_listener(self):
         """
         Para a thread de leitura do scanner.
@@ -981,12 +1179,28 @@ class LabelManagerGUI(tk.Tk):
             self.scanner_listener_thread.join(timeout=2)
             self.scanner_listener_thread = None
 
+    def stop_scanner2_listener(self):
+        """
+        Para a thread de leitura do scanner 2.
+        """
+        self.scanner2_stop_event.set()
+        if self.scanner2_listener_thread:
+            self.scanner2_listener_thread.join(timeout=2)
+            self.scanner2_listener_thread = None
+
     def restart_scanner_listener(self):
         """
         Reinicia a thread de leitura do scanner.
         """
         self.stop_scanner_listener()
         self.start_scanner_listener()
+
+    def restart_scanner2_listener(self):
+        """
+        Reinicia a thread de leitura do scanner 2.
+        """
+        self.stop_scanner2_listener()
+        self.start_scanner2_listener()
 
     def scanner_listener(self):
         """
@@ -1009,6 +1223,49 @@ class LabelManagerGUI(tk.Tk):
                 self.after(0, self.scanner_status_label.config, {"text": f"Erro no scanner: {str(e)}"})
                 # Aguarda um curto período antes de tentar reconectar
                 self.scanner_stop_event.wait(2)
+
+    def scanner2_listener(self):
+        """
+        Lê continuamente a porta do scanner 2 e processa cada código lido.
+        Atualiza o status de conexão do scanner 2 com base na tentativa de abrir a porta.
+        """
+        while not self.scanner2_stop_event.is_set():
+            try:
+                with serial.Serial(self.label_manager.scanner_port2,
+                                  self.label_manager.scanner_baud_rate2,
+                                  timeout=1) as scanner:
+                    self.scanner2_connected = True
+                    while not self.scanner2_stop_event.is_set():
+                        barcode_bytes = scanner.readline()
+                        barcode = barcode_bytes.decode().strip() if barcode_bytes else ""
+                        if barcode:
+                            self.after(0, self.process_scanned_barcode, barcode)
+            except Exception as e:
+                self.scanner2_connected = False
+                self.after(0, self.scanner_status_label.config, {"text": f"Erro no scanner 2: {str(e)}"})
+                # Aguarda um curto período antes de tentar reconectar
+                self.scanner2_stop_event.wait(2)
+    
+    def start_modbus_monitoring(self):
+        """
+        Inicia o monitoramento dos endereços Modbus em uma thread separada.
+        """
+        # Importa o módulo modbus e threading
+        from modbusclient import monitor_modbus_input
+        import threading
+        
+        # Inicia o monitoramento em uma thread separada
+        self.modbus_monitor_thread = threading.Thread(
+            target=monitor_modbus_input,
+            kwargs={
+                'address_to_monitor': 1,
+                'address_to_write': 2,
+                'address_read_confirmation': 3
+            },
+            daemon=True
+        )
+        self.modbus_monitor_thread.start()
+        logging.info("Monitoramento Modbus iniciado nos endereços 1, 2 e 3.")
 
     def process_scanned_barcode(self, barcode):
         """
@@ -1075,6 +1332,224 @@ class LabelManagerGUI(tk.Tk):
         except Exception as e:
             print("Erro ao exportar CSV do Resumo:", e)
             self.process_status.config(text=f"Erro ao salvar CSV: {str(e)}")
+
+    def start_modbus_monitoring(self):
+        """
+        Monitora os registradores Modbus para detectar erros e exibir alertas.
+        Verifica periodicamente o status da impressora e do scanner via Modbus.
+        """
+        try:
+            # Carrega os endereços dos registradores Modbus a partir da configuração
+            modbus_address = self.config_data.get("modbus_address", 0)
+            modbus_address_to_write = self.config_data.get("modbus_address_to_write", 6)
+            
+            # Lê o valor dos registradores
+            from modbusclient import read_modbus_register_silent
+            
+            printer_status = read_modbus_register_silent(modbus_address)
+            scanner_status = read_modbus_register_silent(modbus_address_to_write)
+            
+            # Verifica se há erro na impressora (valor 1 no endereço da impressora)
+            if printer_status == 1:
+                self.show_printer_error_alert()
+            
+            # Verifica se há erro no scanner (valor 1 no endereço do scanner)
+            if scanner_status == 1:
+                self.show_scanner_error_alert()
+                
+        except Exception as e:
+            logging.error(f"Erro ao monitorar registradores Modbus: {e}")
+        
+        # Agenda a próxima verificação para daqui a 2 segundos
+        self.after(2000, self.start_modbus_monitoring)
+    
+    def show_printer_error_alert(self):
+        """
+        Exibe um alerta sobre problemas na impressora com efeito piscante.
+        """
+        try:
+            # Verifica se já existe uma janela de alerta aberta
+            if hasattr(self, 'printer_alert_window') and self.printer_alert_window.winfo_exists():
+                return  # Evita criar múltiplas janelas de alerta
+            
+            self.printer_alert_window = tk.Toplevel(self)
+            self.printer_alert_window.title("ALERTA - IMPRESSORA")
+            
+            # Aumenta o tamanho da janela
+            self.printer_alert_window.geometry("600x450")
+            self.printer_alert_window.configure(bg="red")
+            
+            # Centraliza a janela na tela
+            window_width = 600
+            window_height = 450
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+            center_x = int(screen_width/2 - window_width/2)
+            center_y = int(screen_height/2 - window_height/2)
+            self.printer_alert_window.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
+            
+            # Configura para ficar sempre visível
+            self.printer_alert_window.attributes('-topmost', True)
+            
+            # Cria uma borda visível ao redor da janela
+            self.printer_alert_window.configure(highlightbackground="red", highlightcolor="red", 
+                                               highlightthickness=5, bd=5)
+            
+            # Adiciona um frame para o conteúdo
+            frame = ttk.Frame(self.printer_alert_window, padding=20)
+            frame.pack(fill="both", expand=True, padx=20, pady=20)
+            
+            # Ícone de alerta
+            alert_label = ttk.Label(frame, text="⚠️", font=("Helvetica", 60))
+            alert_label.pack(pady=20)
+            
+            # Mensagem de erro
+            error_label = ttk.Label(
+                frame, 
+                text="ERRO NA IMPRESSORA!\n\nVerifique se há falta de papel, ribbon ou se a impressora está em pausa.",
+                font=("Helvetica", 16, "bold"),
+                wraplength=500,
+                justify="center"
+            )
+            error_label.pack(pady=20)
+            
+            # Botão para fechar o alerta
+            close_button = ttk.Button(
+                frame, 
+                text="Entendi, verificar impressora", 
+                command=self.printer_alert_window.destroy,
+                style="Accent.TButton"
+            )
+            close_button.pack(pady=20)
+            
+            # Som de alerta
+            self.bell()
+            
+            # Inicializa variáveis para controle do piscar
+            self.printer_alert_window.blink_state = True
+            self.printer_alert_window.blink_job = None
+            
+            # Inicia o efeito de piscar
+            self._blink_window_border(self.printer_alert_window, "red")
+            
+            # Configura para parar o piscar quando a janela for fechada
+            self.printer_alert_window.protocol("WM_DELETE_WINDOW", 
+                                              lambda: self._stop_blinking_and_close(self.printer_alert_window))
+            
+        except Exception as e:
+            logging.error(f"Erro ao exibir alerta da impressora: {e}")
+    
+    def show_scanner_error_alert(self):
+        """
+        Exibe um alerta sobre problemas no scanner com efeito piscante.
+        """
+        try:
+            # Verifica se já existe uma janela de alerta aberta
+            if hasattr(self, 'scanner_alert_window') and self.scanner_alert_window.winfo_exists():
+                return  # Evita criar múltiplas janelas de alerta
+            
+            self.scanner_alert_window = tk.Toplevel(self)
+            self.scanner_alert_window.title("ALERTA - SCANNER")
+            
+            # Aumenta o tamanho da janela
+            self.scanner_alert_window.geometry("600x450")
+            self.scanner_alert_window.configure(bg="orange")
+            
+            # Centraliza a janela na tela
+            window_width = 600
+            window_height = 450
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+            center_x = int(screen_width/2 - window_width/2)
+            center_y = int(screen_height/2 - window_height/2)
+            self.scanner_alert_window.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
+            
+            # Configura para ficar sempre visível
+            self.scanner_alert_window.attributes('-topmost', True)
+            
+            # Cria uma borda visível ao redor da janela
+            self.scanner_alert_window.configure(highlightbackground="orange", highlightcolor="orange", 
+                                               highlightthickness=5, bd=5)
+            
+            # Adiciona um frame para o conteúdo
+            frame = ttk.Frame(self.scanner_alert_window, padding=20)
+            frame.pack(fill="both", expand=True, padx=20, pady=20)
+            
+            # Ícone de alerta
+            alert_label = ttk.Label(frame, text="⚠️", font=("Helvetica", 60))
+            alert_label.pack(pady=20)
+            
+            # Mensagem de erro
+            error_label = ttk.Label(
+                frame, 
+                text="ERRO DE LEITURA!\n\nProduto passou pelo sensor mas não foi lido pelo scanner!",
+                font=("Helvetica", 16, "bold"),
+                wraplength=500,
+                justify="center"
+            )
+            error_label.pack(pady=20)
+            
+            # Botão para fechar o alerta
+            close_button = ttk.Button(
+                frame, 
+                text="Entendi, verificar scanner", 
+                command=self.scanner_alert_window.destroy,
+                style="Accent.TButton" 
+            )
+            close_button.pack(pady=20)
+            
+            # Som de alerta
+            self.bell()
+            
+            # Inicializa variáveis para controle do piscar
+            self.scanner_alert_window.blink_state = True
+            self.scanner_alert_window.blink_job = None
+            
+            # Inicia o efeito de piscar
+            self._blink_window_border(self.scanner_alert_window, "orange")
+            
+            # Configura para parar o piscar quando a janela for fechada
+            self.scanner_alert_window.protocol("WM_DELETE_WINDOW", 
+                                              lambda: self._stop_blinking_and_close(self.scanner_alert_window))
+            
+        except Exception as e:
+            logging.error(f"Erro ao exibir alerta do scanner: {e}")
+    
+    def _blink_window_border(self, window, color):
+        """
+        Faz a borda da janela piscar alternando entre visível e invisível.
+        
+        Args:
+            window: A janela de alerta
+            color: A cor da borda quando visível
+        """
+        if not window.winfo_exists():
+            return
+        
+        if window.blink_state:
+            # Borda visível com cor de alerta
+            window.configure(highlightbackground=color, highlightcolor=color, highlightthickness=2)
+        else:
+            # Borda invisível (usa a mesma cor do fundo para "esconder" a borda)
+            window.configure(highlightbackground=window.cget("bg"), highlightcolor=window.cget("bg"), 
+                             highlightthickness=2)
+        
+        # Alterna o estado
+        window.blink_state = not window.blink_state
+        
+        # Agenda a próxima alternância
+        window.blink_job = window.after(500, self._blink_window_border, window, color)
+    
+    def _stop_blinking_and_close(self, window):
+        """
+        Para o efeito de piscar e fecha a janela.
+        
+        Args:
+            window: A janela de alerta
+        """
+        if hasattr(window, 'blink_job') and window.blink_job:
+            window.after_cancel(window.blink_job)
+        window.destroy()
 
 # ---------------------------------------------------------------------------
 # Bloco Principal

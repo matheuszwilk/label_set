@@ -1,15 +1,20 @@
 {
     "serial_port": "COM12",
-    "scanner_port": "COM13",
+    "scanner_port": "COM6",
+    "scanner_port2": "COM13",
     "baud_rate": 9600,
     "scanner_baud_rate": 9600,
+    "scanner_baud_rate2": 9600,
     "novo_darkness": 10,
-    "desired_move_x": 80,
-    "desired_move_y": 0,
+    "desired_move_x": 50,
+    "desired_move_y": 10,
     "modbus_host": "127.0.0.1",
     "modbus_port": 502,
-    "modbus_address": 0,
+    "modbus_address": 2,
+    "modbus_address_to_monitor": 3,
+    "modbus_address_to_write": 4,
+    "modbus_address_read_confirmation": 5,
     "zpl_scale": 2,
     "label_type_for_workorder": "AZ_SET_AIRCON",
-    "theme": "dark"
+    "theme": "light"
 }
